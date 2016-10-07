@@ -15,23 +15,26 @@
 #
 
 import base64
-import certificate
+from rhsm import certificate
 import datetime
 import dateutil.parser
-import httplib
 import locale
 import logging
 import os
+import socket
 import sys
-import urllib
 
 from rhsm.https import httplib, ssl
 
-from urllib import urlencode
+try:
+    from urllib.parse import urlencode, quote, quote_plus
+    from urllib.request import proxy_bypass_environment
+except ImportError:
+    from urllib import urlencode, quote, quote_plus, proxy_bypass_environment
 
-from config import initConfig
+from rhsm.config import initConfig
 
-import version
+from rhsm import version
 python_rhsm_version = version.rpm_version
 
 try:
@@ -221,7 +224,7 @@ class ExpiredIdentityCertException(ConnectionException):
 
 
 def _encode_auth(username, password):
-    encoded = base64.b64encode(':'.join((username, password)))
+    encoded = base64.b64encode(':'.join((username, password)).encode('utf-8'))
     return 'Basic %s' % encoded
 
 
@@ -251,7 +254,7 @@ class ContentConnection(object):
         self.ssl_verify_depth = ssl_verify_depth
 
         # honor no_proxy environment variable
-        if urllib.proxy_bypass_environment(self.host):
+        if proxy_bypass_environment(self.host):
             self.proxy_hostname = None
             self.proxy_port = None
             self.proxy_user = None
@@ -294,7 +297,7 @@ class ContentConnection(object):
                               "User-Agent": self.user_agent})
         response = conn.getresponse()
         result = {
-            "content": response.read(),
+            "content": response.read().decode('utf-8'),
             "status": response.status,
             "headers": dict(response.getheaders())}
 
@@ -401,32 +404,6 @@ class Restlib(object):
         if username and password:
             self.headers['Authorization'] = _encode_auth(username, password)
 
-    def _decode_list(self, data):
-        rv = []
-        for item in data:
-            if isinstance(item, unicode):
-                item = item.encode('utf-8')
-            elif isinstance(item, list):
-                item = self._decode_list(item)
-            elif isinstance(item, dict):
-                item = self._decode_dict(item)
-            rv.append(item)
-        return rv
-
-    def _decode_dict(self, data):
-        rv = {}
-        for key, value in data.iteritems():
-            if isinstance(key, unicode):
-                key = key.encode('utf-8')
-            if isinstance(value, unicode):
-                value = value.encode('utf-8')
-            elif isinstance(value, list):
-                value = self._decode_list(value)
-            elif isinstance(value, dict):
-                value = self._decode_dict(value)
-            rv[key] = value
-        return rv
-
     def _load_ca_certificates(self, context):
         loaded_ca_certs = []
         try:
@@ -437,7 +414,7 @@ class Restlib(object):
                     loaded_ca_certs.append(cert_file)
                     if res == 0:
                         raise BadCertificateException(cert_path)
-        except OSError, e:
+        except OSError as e:
             raise ConnectionSetupException(e.strerror)
 
         if loaded_ca_certs:
@@ -503,13 +480,13 @@ class Restlib(object):
                 if not id_cert.is_valid():
                     raise ExpiredIdentityCertException()
             raise
-        except socket.error, e:
+        except socket.error as e:
             if str(e)[-3:] == str(httplib.PROXY_AUTHENTICATION_REQUIRED):
                 raise ProxyException(e)
             raise
         response = conn.getresponse()
         result = {
-            "content": response.read(),
+            "content": response.read().decode('utf-8'),
             "status": response.status,
             "headers": dict(response.getheaders())
         }
@@ -533,7 +510,7 @@ class Restlib(object):
         if not len(result['content']):
             return None
 
-        return json.loads(result['content'], object_hook=self._decode_dict)
+        return json.loads(result['content'])
 
     def validateResponse(self, response, request_type=None, handler=None):
 
@@ -545,11 +522,11 @@ class Restlib(object):
             else:
                 # try vaguely to see if it had a json parseable body
                 try:
-                    parsed = json.loads(response['content'], object_hook=self._decode_dict)
-                except ValueError, e:
+                    parsed = json.loads(response['content'])
+                except ValueError as e:
                     log.error("Response: %s" % response['status'])
                     log.error("JSON parsing error: %s" % e)
-                except Exception, e:
+                except Exception as e:
                     log.error("Response: %s" % response['status'])
                     log.exception(e)
 
@@ -564,7 +541,6 @@ class Restlib(object):
                     raise GoneException(response['status'],
                                         parsed['displayMessage'],
                                         parsed['deletedId'])
-
                 elif str(response['status']) == str(httplib.PROXY_AUTHENTICATION_REQUIRED):
                     raise ProxyException
 
@@ -597,7 +573,6 @@ class Restlib(object):
                                              handler=handler)
                 elif str(response['status']) in ['429']:
                     raise RateLimitExceededException(response['status'])
-
                 elif str(response['status']) == str(httplib.PROXY_AUTHENTICATION_REQUIRED):
                     raise ProxyException
 
@@ -670,7 +645,7 @@ class UEPConnection:
         self.handler = self.handler.rstrip("/")
 
         # honor no_proxy environment variable
-        if urllib.proxy_bypass_environment(self.host):
+        if proxy_bypass_environment(self.host):
             self.proxy_hostname = None
             self.proxy_port = None
             self.proxy_user = None
@@ -935,7 +910,7 @@ class UEPConnection:
         return ret
 
     def addOrUpdateGuestId(self, uuid, guestId):
-        if isinstance(guestId, basestring):
+        if isinstance(guestId, str) or isinstance(guestId, type(u"")):
             guest_uuid = guestId
             guestId = {}
         else:
@@ -959,7 +934,7 @@ class UEPConnection:
         return [self.sanitizeGuestId(guestId) for guestId in guestIds or []]
 
     def sanitizeGuestId(self, guestId):
-        if isinstance(guestId, basestring):
+        if isinstance(guestId, str) or isinstance(guestId, type(u"")):
             return guestId
         elif isinstance(guestId, dict) and "guestId" in guestId.keys():
             if self.supports_resource('guestids'):
@@ -1392,7 +1367,7 @@ class UEPConnection:
         # This is a wrapper around urllib.quote to avoid issues like the one
         # discussed in http://bugs.python.org/issue9301
         if plus:
-            sane_string = urllib.quote_plus(str(url_param))
+            sane_string = quote_plus(str(url_param))
         else:
-            sane_string = urllib.quote(str(url_param))
+            sane_string = quote(str(url_param))
         return sane_string
