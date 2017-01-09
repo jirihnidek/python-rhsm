@@ -540,7 +540,7 @@ class Restlib(object):
     def validateResponse(self, response, request_type=None, handler=None):
 
         # FIXME: what are we supposed to do with a 204?
-        if str(response['status']) not in ["200", "202", "204"]:
+        if str(response['status']) not in ["200", "202", "204", "304"]:
             parsed = {}
             if not response.get('content'):
                 parsed = {}
@@ -1083,6 +1083,20 @@ class UEPConnection:
         Get serial numbers for certs for a given consumer
         """
         method = '/consumers/%s/certificates/serials' % self.sanitize(consumerId)
+        return self.conn.request_get(method)
+
+    def getAccessibleContent(self, consumerId, if_modified_since=None):
+        """
+        Get the content of the accessible content cert for a given consumer.
+
+        :param consumerId: consumer id
+        :param if_modified_since: if present, only return the content if it was altered since the given date
+        :return: json with the last modified date and the content
+        """
+        method = "/consumers/%s/accessible_content" % consumerId
+        if if_modified_since:
+            timestamp = if_modified_since.strftime("%Y/%m/%d %H:%M:%S %z")
+            method = "%s?if-modified-since=%s" % (method, self.sanitize(timestamp))
         return self.conn.request_get(method)
 
     def bindByEntitlementPool(self, consumerId, poolId, quantity=None):
